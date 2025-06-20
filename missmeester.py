@@ -32,12 +32,12 @@ def analyse_fen_via_lichess(fen: str):
         )
         if response.status_code == 200:
             data = response.json()
-            cp = data.get("pvs", [{}])[0].get("cp", 0)
+            cp = data.get("pvs", [{}])[0].get("cp", None)
             uci = data.get("pvs", [{}])[0].get("moves", "").split()[0] if data.get("pvs") else None
             return cp, uci
     except Exception as e:
         st.warning(f"Lichess analyse mislukt: {e}")
-    return 0, None
+    return None, None
 
 # --- Streamlit setup ---
 st.set_page_config(page_title=APP_NAME, layout="wide")
@@ -108,9 +108,9 @@ for gi, game in enumerate(games):
             board.push(move)
             fen = board.fen()
             cp, best = analyse_fen_via_lichess(fen)
-            eval_seq.append(cp)
+            eval_seq.append(cp if cp is not None else None)
 
-            if prev_eval is not None:
+            if cp is not None and prev_eval is not None:
                 delta = cp - prev_eval
                 if abs(delta) > DELTA_SMALL:
                     gain = abs(prev_eval) < DELTA_SMALL and abs(cp) > DELTA_LARGE
@@ -123,7 +123,8 @@ for gi, game in enumerate(games):
                             "best_move": best,
                             "delta": delta
                         })
-            prev_eval = cp
+            if cp is not None:
+                prev_eval = cp
 
         all_results.append({
             "meta": meta,
@@ -139,8 +140,16 @@ for i, result in enumerate(all_results):
     st.header(f"Partij {i+1}: {meta['White']} vs {meta['Black']} ({meta['Event']} {meta['Date'][:4]})")
 
     # Evaluatiegrafiek
-    fig = px.line(y=result['eval_seq'], labels={'x': 'Zet', 'y': 'Centipawns'}, title="Evaluatieverloop")
+    valid_scores = [v if v is not None else None for v in result['eval_seq']]
+    fig = px.line(y=valid_scores, labels={'x': 'Zet', 'y': 'Centipawns'}, title="Evaluatieverloop")
     fig.add_hline(y=0, line_dash="dash")
+
+    # Markeer tactische momenten als stippen
+    if result['tactics']:
+        tactic_indices = [t['ply'] for t in result['tactics']]
+        tactic_values = [result['eval_seq'][t['ply']] for t in result['tactics']]
+        fig.add_scatter(x=tactic_indices, y=tactic_values, mode='markers', marker=dict(color='red', size=8), name='Tactisch moment')
+
     st.plotly_chart(fig, use_container_width=True)
 
     # Tactische momenten
@@ -155,6 +164,14 @@ for i, result in enumerate(all_results):
     with st.expander("Speel deze partij na"):
         board = chess.Board()
         for j, uci in enumerate(result['moves']):
-            move = chess.Move.from_uci(uci)
-            board.push(move)
-            st.image('data:image/svg+xml;utf-8,' + chess.svg.board(board=board, size=480), caption=f"Zet {j+1}: {uci}")
+            try:
+                move = chess.Move.from_uci(uci)
+                if move in board.legal_moves:
+                    board.push(move)
+                else:
+                    st.warning(f"Ongeldige zet: {uci}")
+                    break
+                svg = chess.svg.board(board=board, size=480)
+                st.image('data:image/svg+xml;utf-8,' + svg, caption=f"Zet {j+1}: {uci}")
+            except Exception as e:
+                st.error(f"Fout bij zetten naspelen: {e}")
